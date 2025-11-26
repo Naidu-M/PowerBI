@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Power BI Pocket Prep - PL-300 Performance Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .module-card {
+            transition: all 0.2s ease;
+        }
+        .module-card:active {
+            transform: scale(0.98);
+        }
+
+        .learn-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        .learn-content::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 4px;
+        }
+
+        #progress-fill {
+            transition: width 0.5s ease-out;
+        }
+    </style>
+    <!-- Chart.js for visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="h-screen flex flex-col overflow-hidden text-slate-800">
+
+    <!-- App Header -->
+    <header class="bg-yellow-500 text-slate-900 p-4 shadow-md z-20 flex justify-between items-center">
+        <div>
+            <h1 class="font-bold text-xl tracking-tight flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+                PL-300 Master Class
+            </h1>
+            <p id="user-info" class="text-xs font-semibold opacity-80"></p>
+        </div>
+        <div class="flex flex-col items-end gap-1">
+            <span id="progress-text" class="text-xs font-bold bg-white/20 px-2 py-0.5 rounded-md">...</span>
+            <div class="w-24 h-1.5 bg-black/10 rounded-full overflow-hidden">
+                <div id="progress-fill" class="h-full bg-white w-0"></div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main id="app-container" class="flex-1 overflow-y-auto p-4 relative bg-gray-50">
+        <!-- Initial Loading State -->
+        <div id="loading-spinner" class="h-full flex flex-col justify-center items-center">
+            <svg class="animate-spin -ml-1 mr-3 h-8 w-8 text-yellow-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="mt-4 text-sm text-gray-600">Loading modules and connecting to profile...</p>
+        </div>
+    </main>
+
+    <!-- Bottom Navigation (Contextual) -->
+    <nav id="bottom-nav" class="bg-white border-t border-gray-200 p-4 hidden z-20 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
+        <button id="nav-btn" class="w-full bg-slate-900 text-white font-bold py-3.5 rounded-xl shadow-lg hover:bg-slate-800 transition-colors flex items-center justify-center gap-2">
+            <span>Continue</span>
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+        </button>
+    </nav>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // --- GLOBAL CANVAS/FIREBASE VARS ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-pl300-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let userId = null;
+        let isAuthReady = false;
+        let unsubscribeAttempts = null;
+        let attemptsHistory = [];
+        
+        // Define Firestore paths
+        const ATTEMPTS_COLLECTION_PATH = (uid) => `artifacts/${appId}/users/${uid}/pl300_attempts`;
+
+        // --- DATA: EXHAUSTIVE PL-300 CONTENT ---
+        const modules = [
+            // Module 1: Prepare the Data
+            {
+                id: "prep",
+                title: "1. Prepare the Data (25-30%)",
+                icon: `<svg class="w-8 h-8 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>`,
+                desc: "Get Data, Clean, Transform, and Load.",
+                color: "bg-yellow-50",
+                quiz: [
+                    { q: "You are connecting to a massive SQL database (500 TB). You need the report to show the absolute latest transactions instantly. Which mode do you use?", options: ["Import", "DirectQuery", "Dual", "Live Connection"], correct: 1, explanation: "DirectQuery leaves data at the source. It is required for real-time needs and massive datasets that won't fit in memory." },
+                    { q: "You have an Excel file where the months (Jan, Feb, Mar) are separate columns. You need to make a single 'Month' column to create a timeline chart. What transformation is this?", options: ["Pivot", "Unpivot", "Transpose", "Merge Queries"], correct: 1, explanation: "Unpivot turns column headers (Jan, Feb...) into values in a single column (Attribute/Value pair)." },
+                    { q: "What is 'Query Folding'?", options: ["Collapsing the query list to save space", "Pushing the transformation logic back to the data source (SQL)", "Merging two queries into one", "Compressing the data"], correct: 1, explanation: "Query Folding translates Power Query steps into the native language of the source (like SQL), improving performance." },
+                    { q: "Which Data Profiling tool helps you identify if a column contains 'Unique' (one occurrence) vs 'Distinct' (total different) values?", options: ["Column Quality", "Column Distribution", "Dependence Analysis", "Monotone Check"], correct: 1, explanation: "Column Distribution provides the histogram and the count of distinct vs unique values." }
+                ],
+            },
+            // Module 2: Model the Data
+            {
+                id: "model",
+                title: "2. Model the Data (25-30%)",
+                icon: `<svg class="w-8 h-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>`,
+                desc: "Schema Design, Relationships, and DAX.",
+                color: "bg-blue-50",
+                quiz: [
+                    { q: "You have a Sales table and a Budget table. Both are related to the Date table. What is this schema structure called?", options: ["Star Schema", "Snowflake Schema", "Galaxy Schema (Fact Constellation)", "Flat Schema"], correct: 0, explanation: "When multiple Fact tables share Dimension tables, it is technically a Star Schema (or Galaxy), but the core concept tested is the Star topology." },
+                    { q: "You have two date columns in your Sales table: 'OrderDate' and 'ShipDate'. You can only have one active relationship to the Calendar table. How do you analyze by 'ShipDate'?", options: ["Create a second Calendar table", "Use the USERELATIONSHIP function in DAX", "Delete the OrderDate relationship", "Merge the tables"], correct: 1, explanation: "USERELATIONSHIP allows you to temporarily activate an inactive relationship for a specific calculation." },
+                    { q: "What DAX function is required to modify or override the current filter context (e.g., ignore a slicer)?", options: ["SUMX", "CALCULATE", "FILTER", "RELATED"], correct: 1, explanation: "CALCULATE is the only function that can add, remove, or modify filters on the data." },
+                    { q: "Why should you create a dedicated Date Table instead of using Auto Date/Time?", options: ["It looks prettier", "It allows for Time Intelligence functions and reduces file size", "It is required for Import mode", "Microsoft requires it for licensing"], correct: 1, explanation: "Dedicated Date tables are essential for correct Time Intelligence (YTD/MOM) and performance." }
+                ],
+            },
+            // Module 3: Visualize & Analyze
+            {
+                id: "visualize",
+                title: "3. Visualize & Analyze (25-30%)",
+                icon: `<svg class="w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg>`,
+                desc: "Charts, UX, Accessibility, and AI.",
+                color: "bg-green-50",
+                quiz: [
+                    { q: "You want users to click a button to switch a chart from showing 'Sales by Year' to 'Sales by Region'. What feature do you use?", options: ["Drill-through", "Bookmarks", "Tooltip", "Conditional Formatting"], correct: 1, explanation: "Bookmarks save the visibility state of visuals. You create two bookmarks and link them to buttons." },
+                    { q: "Which AI visual would you use to find out which factors (like Region, Discount, Color) influence a customer to return a product?", options: ["Scatter Plot", "Key Influencers", "Decomposition Tree", "Q&A"], correct: 1, explanation: "Key Influencers analyzes your data to find correlations and factors that drive a specific metric." },
+                    { q: "You have a Slicer for 'Year' on Page 1. You want the same slicer on Page 2 to update automatically when Page 1 is changed. What do you configure?", options: ["Edit Interactions", "Sync Slicers", "Bookmarks", "Drill-down"], correct: 1, explanation: "Sync Slicers allows a slicer to synchronize its selection across multiple pages." },
+                    { q: "What is the most important step to ensure your report is accessible for users with screen readers?", options: ["Use bright colors", "Add Alt Text to all visuals", "Use a pie chart", "Increase font size to 50"], correct: 1, explanation: "Alt Text provides a text description of the visual that screen readers can read aloud." }
+                ],
+            },
+            // Module 4: Deploy & Maintain
+            {
+                id: "deploy",
+                title: "4. Deploy & Maintain (15-20%)",
+                icon: `<svg class="w-8 h-8 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>`,
+                desc: "Workspaces, Security, Refresh, and Apps.",
+                color: "bg-purple-50",
+                quiz: [
+                    { q: "You assign John to the 'US Sales' RLS role. But John is also a 'Contributor' in the Workspace. Can John see European data?", options: ["No, RLS blocks him", "Yes, Contributor permission overrides RLS", "Only if he uses a Gateway", "Only if he is an Admin"], correct: 1, explanation: "Workspace roles with Edit permissions (Admin, Member, Contributor) override RLS. RLS only strictly applies to Viewers." },
+                    { q: "Which Gateway mode allows multiple users to share the same connection to an on-premises SQL server?", options: ["Personal Mode", "Standard Mode", "VNet Gateway", "Direct Gateway"], correct: 1, explanation: "Standard Mode is for enterprise use, allowing multiple users and scheduled refreshes. Personal mode is tied to one user." },
+                    { q: "You want to mark a dataset as 'Official' and vetted by the IT department. Which endorsement do you use?", options: ["Promoted", "Certified", "Validated", "Official"], correct: 1, explanation: "Certified indicates the highest level of trust and is usually restricted to specific security groups." },
+                    { q: "You want to send a screenshot of a report to your manager's email every morning at 8 AM. What feature do you use?", options: ["Alerts", "Subscriptions", "Dashboards", "Export to PDF"], correct: 1, explanation: "Subscriptions allow you to schedule emails with snapshots of reports or dashboards." }
+                ],
+            },
+            // Module 5: Study Strategy & Resources
+            {
+                id: "strategy",
+                title: "5. Study Strategy & Resources",
+                icon: `<svg class="w-8 h-8 text-pink-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>`,
+                desc: "Where to go next & how to pass.",
+                color: "bg-pink-50",
+                quiz: [
+                    { q: "When tackling a Case Study in the exam, what should you do first?", options: ["Read the entire case study top to bottom", "Read the Question first, then scan the text", "Skip it", "Guess"], correct: 1, explanation: "Case studies are full of distraction data. Reading the question first tells you exactly what to look for." },
+                    { q: "Where is the best place for free, official, interactive labs for PL-300?", options: ["YouTube", "Microsoft Learn", "Reddit", "Twitter"], correct: 1, explanation: "Microsoft Learn is the official source and contains the exact labs that align with the exam." }
+                ],
+            }
+        ];
+
+        // Function to look up module details
+        const getModuleDetails = (id) => modules.find(m => m.id === id);
+
+
+        // --- STATE MANAGEMENT ---
+        const state = {
+            view: 'loading', // loading, home, learn, quiz, performance
+            currentModuleId: null,
+            quizIndex: 0,
+            score: 0
+        };
+
+        // --- DOM ELEMENTS ---
+        const appContainer = document.getElementById('app-container');
+        const bottomNav = document.getElementById('bottom-nav');
+        const navBtn = document.getElementById('nav-btn');
+        const progressFill = document.getElementById('progress-fill');
+        const progressText = document.getElementById('progress-text');
+        const userInfoEl = document.getElementById('user-info');
+        
+
+        // --- FIREBASE INITIALIZATION & AUTH ---
+        if (Object.keys(firebaseConfig).length > 0) {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            
+            // Set up real-time listener for auth state
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    userId = user.uid;
+                    isAuthReady = true;
+                    userInfoEl.textContent = `User ID: ${userId}`;
+                    console.log("Firebase Auth Ready. User:", userId);
+                    await setupFirestoreListeners();
+                } else {
+                    try {
+                        // Sign in anonymously if no token is available or user is signed out
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Firebase sign-in failed:", error);
+                        // Fallback: continue without authenticated persistence
+                        userId = 'unauthenticated'; 
+                        isAuthReady = true;
+                        userInfoEl.textContent = `Offline Mode`;
+                        renderHome();
+                    }
+                }
+            });
+        } else {
+            // Uninitialized mode - cannot save progress
+            console.error("Firebase configuration missing. Running in Read-Only mode.");
+            userId = 'readonly';
+            isAuthReady = true;
+            userInfoEl.textContent = `Read-Only Mode`;
+            renderHome();
+        }
+
+        async function setupFirestoreListeners() {
+            if (!isAuthReady || !db || !userId || userId === 'unauthenticated' || userId === 'readonly') {
+                renderHome();
+                return;
+            }
+
+            // Unsubscribe existing listener if present
+            if (unsubscribeAttempts) unsubscribeAttempts();
+
+            // Order by timestamp descending to get latest attempts first
+            const attemptsColRef = collection(db, ATTEMPTS_COLLECTION_PATH(userId));
+            const attemptsQuery = query(attemptsColRef, orderBy("timestamp", "desc"));
+
+            unsubscribeAttempts = onSnapshot(attemptsQuery, (snapshot) => {
+                attemptsHistory = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                    timestamp: doc.data().timestamp.toDate() // Convert Firestore Timestamp to JS Date
+                }));
+                
+                console.log(`Loaded ${attemptsHistory.length} attempts from Firestore.`);
+                
+                if (state.view === 'loading' || state.view === 'home') {
+                    renderHome();
+                }
+                if (state.view === 'performance') {
+                    renderPerformance(); // Update performance view in real-time
+                }
+                updateTotalProgress();
+            }, (error) => {
+                console.error("Error listening to attempts collection:", error);
+                renderHome();
+            });
+        }
+
+
+        // --- UI RENDERING & LOGIC ---
+
+        function getModuleCompletionStatus() {
+            const completionStatus = {};
+            // Determine completed modules based on at least one successful attempt (passed=true)
+            modules.forEach(mod => {
+                completionStatus[mod.id] = attemptsHistory.some(a => a.moduleId === mod.id && a.passed);
+            });
+            return completionStatus;
+        }
+
+        function updateTotalProgress() {
+            const totalModules = modules.length;
+            const completionStatus = getModuleCompletionStatus();
+            const completed = Object.values(completionStatus).filter(status => status).length;
+            const percent = Math.round((completed / totalModules) * 100);
+            
+            progressText.textContent = `${percent}%`;
+            progressFill.style.width = `${percent}%`;
+            
+            if(percent === 100) {
+                progressText.classList.add('bg-green-500', 'text-white');
+                progressFill.classList.add('bg-green-500');
+            } else {
+                progressText.classList.remove('bg-green-500', 'text-white');
+                progressFill.classList.remove('bg-green-500');
+            }
+        }
+
+        function renderHome() {
+            state.view = 'home';
+            bottomNav.classList.add('hidden');
+            document.getElementById('loading-spinner').style.display = 'none';
+
+            const completionStatus = getModuleCompletionStatus();
+            
+            let html = `
+                <div class="space-y-6 max-w-lg mx-auto fade-in pb-10">
+                    <div class="bg-gradient-to-r from-slate-800 to-slate-900 rounded-2xl p-6 text-white shadow-lg flex justify-between items-center">
+                        <div>
+                            <h2 class="font-bold text-xl mb-1">Exam Dashboard</h2>
+                            <p class="text-slate-300 text-sm">${attemptsHistory.length} quiz attempts recorded.</p>
+                        </div>
+                        <button onclick="renderPerformance()" class="bg-yellow-400 text-slate-900 font-bold px-3 py-2 rounded-lg text-sm shadow-md hover:bg-yellow-300 transition-colors flex items-center gap-1">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" /></svg>
+                            History
+                        </button>
+                    </div>
+                    
+                    <div class="grid gap-4">
+            `;
+
+            modules.forEach(mod => {
+                const isDone = completionStatus[mod.id];
+                html += `
+                    <div onclick="startModule('${mod.id}')" class="module-card cursor-pointer bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex items-center gap-5 relative overflow-hidden group hover:border-blue-300 hover:shadow-md">
+                        <div class="${mod.color} p-4 rounded-xl shadow-inner group-hover:scale-110 transition-transform duration-300">
+                            ${mod.icon}
+                        </div>
+                        <div class="flex-1 z-10">
+                            <h3 class="font-bold text-slate-900 text-lg">${mod.title}</h3>
+                            <p class="text-sm text-slate-500 mt-1">${mod.desc}</p>
+                        </div>
+                        ${isDone ? `
+                            <div class="absolute right-5 top-1/2 -translate-y-1/2 z-10 bg-green-100 p-2 rounded-full">
+                                <svg class="w-6 h-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                            </div>
+                        ` : `
+                            <svg class="w-5 h-5 text-gray-300 absolute right-5 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+                        `}
+                    </div>
+                `;
+            });
+
+            html += `</div>
+                <div class="text-center text-xs text-gray-400 mt-8 mb-4">
+                    Based on official Microsoft PL-300 Exam Outline
+                </div>
+            </div>`;
+            appContainer.innerHTML = html;
+            updateTotalProgress();
+        }
+
+        // Module content helper (Simplified for this file generation, full content would be here)
+        function getModuleContent(modId) {
+            const mod = getModuleDetails(modId);
+            return `
+                <div class="space-y-8 pb-10">
+                    <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+                        <h3 class="font-bold text-lg text-slate-800 mb-2">${mod.title} Deep Dive</h3>
+                        <p class="text-gray-600 leading-relaxed">This view is where your comprehensive study notes and deep-dive content for the **${mod.title}** module would reside. This is the material to review before taking the quiz to improve your score!</p>
+                        <p class="text-gray-600 mt-3">Ready to test your knowledge? Click the button below.</p>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function startModule(id) {
+            state.currentModuleId = id;
+            renderLearn();
+        }
+
+        function renderLearn() {
+            state.view = 'learn';
+            const mod = getModuleDetails(state.currentModuleId);
+            
+            appContainer.innerHTML = `
+                <div class="max-w-lg mx-auto fade-in h-full flex flex-col">
+                    <div class="flex items-center gap-3 mb-6 sticky top-0 bg-gray-50 pt-2 pb-4 z-10">
+                        <button onclick="renderHome()" class="p-2 bg-white rounded-full shadow-sm border border-gray-200 text-gray-600 hover:text-slate-900 hover:border-slate-300 transition-colors">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                        </button>
+                        <div>
+                            <p class="text-xs uppercase tracking-wider font-bold text-gray-500">Domain Review</p>
+                            <h2 class="font-bold text-xl text-slate-900 leading-tight">${mod.title}</h2>
+                        </div>
+                    </div>
+                    <div class="learn-content flex-1 overflow-y-auto pr-2 pb-24">
+                        ${getModuleContent(mod.id)}
+                    </div>
+                </div>
+            `;
+
+            bottomNav.classList.remove('hidden');
+            navBtn.innerHTML = `<span>Take Domain Quiz (${mod.quiz.length} Questions)</span> <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>`;
+            navBtn.className = "w-full bg-slate-900 text-white font-bold py-3.5 rounded-xl shadow-lg hover:bg-slate-800 transition-colors flex items-center justify-center gap-2";
+            navBtn.onclick = () => startQuiz();
+        }
+
+        function startQuiz() {
+            state.view = 'quiz';
+            state.quizIndex = 0;
+            state.score = 0;
+            renderQuizQuestion();
+        }
+
+        function renderQuizQuestion() {
+            const mod = getModuleDetails(state.currentModuleId);
+            const question = mod.quiz[state.quizIndex];
+            const total = mod.quiz.length;
+
+            bottomNav.classList.add('hidden');
+
+            let optionsHtml = '';
+            question.options.forEach((opt, idx) => {
+                optionsHtml += `
+                    <button onclick="checkAnswer(${idx})" class="w-full text-left p-4 bg-white border border-gray-200 rounded-xl hover:border-blue-500 hover:shadow-md transition-all font-medium text-slate-700 mb-3 group relative overflow-hidden option-btn">
+                        <div class="flex items-start gap-3">
+                            <span class="flex-shrink-0 flex items-center justify-center w-6 h-6 bg-gray-100 text-gray-500 rounded-md text-xs font-bold group-hover:bg-blue-100 group-hover:text-blue-700 transition-colors mt-0.5">${String.fromCharCode(65 + idx)}</span>
+                            <span class="leading-snug">${opt}</span>
+                        </div>
+                    </button>
+                `;
+            });
+
+            appContainer.innerHTML = `
+                <div class="max-w-lg mx-auto fade-in h-full flex flex-col">
+                    <div class="flex justify-between items-center mb-6">
+                        <div class="flex flex-col">
+                            <span class="text-xs font-bold uppercase tracking-wider text-gray-400">Question ${state.quizIndex + 1} of ${total}</span>
+                            <div class="w-32 h-1 bg-gray-200 rounded-full mt-1 overflow-hidden">
+                                <div class="h-full bg-blue-500 transition-all duration-300" style="width: ${((state.quizIndex + 1) / total) * 100}%"></div>
+                            </div>
+                        </div>
+                        <button onclick="renderLearn()" class="text-xs font-semibold text-gray-500 hover:text-red-500 bg-white px-3 py-1.5 rounded-lg border border-gray-200 shadow-sm">Quit Quiz</button>
+                    </div>
+
+                    <div class="flex-1 overflow-y-auto pb-6">
+                        <h3 class="text-lg font-bold text-slate-900 mb-6 leading-relaxed">${question.q}</h3>
+                        <div id="options-container">
+                            ${optionsHtml}
+                        </div>
+                        <div id="feedback" class="hidden mt-6 p-5 rounded-xl border shadow-sm text-sm leading-relaxed"></div>
+                    </div>
+                    
+                    <div id="next-btn-container" class="mt-4 hidden pb-6">
+                        <button onclick="nextQuestion()" class="w-full bg-slate-900 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-slate-800 transition-colors">
+                            ${state.quizIndex + 1 === total ? 'Finish Quiz' : 'Next Question'}
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function checkAnswer(selectedIdx) {
+            const mod = getModuleDetails(state.currentModuleId);
+            const question = mod.quiz[state.quizIndex];
+            const feedbackEl = document.getElementById('feedback');
+            const optionsContainer = document.getElementById('options-container');
+            const buttons = optionsContainer.getElementsByClassName('option-btn');
+
+            // Disable all buttons
+            for (let btn of buttons) {
+                btn.disabled = true;
+                btn.classList.remove('hover:border-blue-500', 'hover:shadow-md');
+                btn.classList.add('opacity-80');
+            }
+
+            if (selectedIdx === question.correct) {
+                state.score++;
+                buttons[selectedIdx].classList.remove('opacity-80', 'border-gray-200');
+                buttons[selectedIdx].classList.add('border-green-500', 'bg-green-50', 'ring-1', 'ring-green-500');
+                
+                buttons[selectedIdx].innerHTML += `<div class="absolute right-4 top-1/2 -translate-y-1/2 text-green-600"><svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg></div>`;
+                
+                feedbackEl.className = "mt-6 p-5 rounded-xl bg-green-50 text-green-900 border-green-200 border shadow-sm block fade-in";
+                feedbackEl.innerHTML = `<div class="flex gap-2 mb-2 font-bold items-center"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg> Correct!</div> ${question.explanation}`;
+            } else {
+                buttons[selectedIdx].classList.remove('opacity-80', 'border-gray-200');
+                buttons[selectedIdx].classList.add('border-red-500', 'bg-red-50');
+                
+                buttons[question.correct].classList.remove('opacity-80', 'border-gray-200');
+                buttons[question.correct].classList.add('border-green-500', 'bg-green-50', 'ring-1', 'ring-green-500');
+
+                feedbackEl.className = "mt-6 p-5 rounded-xl bg-red-50 text-red-900 border-red-200 border shadow-sm block fade-in";
+                feedbackEl.innerHTML = `<div class="flex gap-2 mb-2 font-bold items-center"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg> Incorrect</div> ${question.explanation}`;
+            }
+
+            document.getElementById('next-btn-container').classList.remove('hidden');
+            appContainer.scrollTo({ top: appContainer.scrollHeight, behavior: 'smooth' });
+        }
+
+        function nextQuestion() {
+            const mod = getModuleDetails(state.currentModuleId);
+            state.quizIndex++;
+
+            if (state.quizIndex < mod.quiz.length) {
+                renderQuizQuestion();
+            } else {
+                finishQuiz();
+            }
+        }
+
+        function getChartDataForPerformance() {
+            const data = {};
+            // Initialize data structure for line chart tracking
+            modules.forEach(mod => {
+                data[mod.id] = {
+                    moduleName: mod.title.split(' ')[1], // e.g., "Prepare"
+                    attempts: [], // Stores {score, date}
+                };
+            });
+
+            // Populate attempts, converting to percentage and storing date
+            // The attemptsHistory is already sorted from newest to oldest
+            const processedHistory = [...attemptsHistory].reverse(); // Reverse to oldest-to-newest for chart plotting
+            
+            processedHistory.forEach(attempt => {
+                const modId = attempt.moduleId;
+                const modData = data[modId];
+                if (modData) {
+                    const percentage = (attempt.score / attempt.total) * 100;
+                    modData.attempts.push({
+                        score: parseFloat(percentage.toFixed(1)),
+                        date: attempt.timestamp
+                    });
+                }
+            });
+
+            return data;
+        }
+
+        function renderPerformance() {
+            state.view = 'performance';
+            bottomNav.classList.add('hidden');
+
+            const chartData = getChartDataForPerformance();
+
+            if (attemptsHistory.length === 0) {
+                 appContainer.innerHTML = `
+                    <div class="max-w-lg mx-auto fade-in h-full flex flex-col justify-center items-center text-center p-6">
+                        <svg class="w-16 h-16 text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" /></svg>
+                        <h2 class="text-xl font-bold text-slate-900 mb-2">No History Recorded</h2>
+                        <p class="text-gray-600 mb-8">Take a few quizzes to start tracking your performance here!</p>
+                        <button onclick="renderHome()" class="w-full max-w-xs bg-slate-900 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-slate-800 transition-transform active:scale-95">
+                            Back to Dashboard
+                        </button>
+                    </div>
+                `;
+                return;
+            }
+
+            // Generate HTML for performance dashboard
+            let attemptsListHtml = attemptsHistory.slice(0, 5).map(attempt => {
+                const mod = getModuleDetails(attempt.moduleId);
+                const percentage = Math.round((attempt.score / attempt.total) * 100);
+                const resultText = attempt.passed ? 'Passed' : 'Failed';
+                const resultColor = attempt.passed ? 'text-green-600 bg-green-100' : 'text-red-600 bg-red-100';
+                
+                return `
+                    <div class="flex justify-between items-center p-3 border-b last:border-b-0">
+                        <div class="flex flex-col">
+                            <span class="font-semibold text-sm">${mod.title.split(')')[0]}) - ${mod.title.split(' ')[1]}</span>
+                            <span class="text-xs text-gray-500">${attempt.timestamp.toLocaleString()}</span>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <span class="font-bold text-sm text-slate-900">${attempt.score}/${attempt.total}</span>
+                            <span class="px-2 py-0.5 rounded-full text-xs font-bold ${resultColor}">${resultText} (${percentage}%)</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+
+            appContainer.innerHTML = `
+                <div class="max-w-lg mx-auto fade-in h-full flex flex-col">
+                    <div class="flex items-center gap-3 mb-6 sticky top-0 bg-gray-50 pt-2 pb-4 z-10">
+                        <button onclick="renderHome()" class="p-2 bg-white rounded-full shadow-sm border border-gray-200 text-gray-600 hover:text-slate-900 hover:border-slate-300 transition-colors">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                        </button>
+                        <div>
+                            <p class="text-xs uppercase tracking-wider font-bold text-gray-500">Performance</p>
+                            <h2 class="font-bold text-xl text-slate-900 leading-tight">Longitudinal Progress Tracker</h2>
+                        </div>
+                    </div>
+
+                    <div class="flex-1 overflow-y-auto pr-2 pb-10 space-y-6">
+                        <!-- Chart Summary -->
+                        <div class="bg-white p-4 rounded-xl shadow-md border border-gray-100">
+                            <h3 class="font-bold text-lg text-slate-800 mb-4">Score Progression </h3>
+                            <p class="text-sm text-gray-500 mb-4">Compare your score on the same topic across multiple attempts to see how your knowledge has improved after study.</p>
+                            <div class="relative h-64">
+                                <canvas id="performanceChart"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Recent Attempts -->
+                        <div class="bg-white p-4 rounded-xl shadow-md border border-gray-100">
+                            <h3 class="font-bold text-lg text-slate-800 mb-2">Recent Quiz Attempts</h3>
+                            <div class="divide-y divide-gray-100">
+                                ${attemptsListHtml}
+                            </div>
+                            ${attemptsHistory.length > 5 ? `<p class="text-xs text-center text-gray-400 mt-3">Showing latest 5 of ${attemptsHistory.length} attempts.</p>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Render the chart after the canvas element is in the DOM
+            renderLineChart(chartData);
+        }
+        
+        // Colors for each module line
+        const moduleColors = {
+            prep: 'rgb(252, 211, 77)',    // Yellow
+            model: 'rgb(59, 130, 246)',   // Blue
+            visualize: 'rgb(16, 185, 129)', // Green
+            deploy: 'rgb(139, 92, 246)',  // Purple
+            strategy: 'rgb(236, 72, 153)' // Pink
+        };
+
+        function renderLineChart(chartData) {
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+            
+            const allAttempts = [];
+            modules.forEach(mod => {
+                allAttempts.push(...chartData[mod.id].attempts.map(a => ({
+                    ...a,
+                    moduleId: mod.id,
+                    moduleName: chartData[mod.id].moduleName,
+                })));
+            });
+
+            // Get unique dates/timestamps to act as X-axis labels (optional, can use index)
+            // For a clearer comparison, we'll label attempts chronologically by index, but keep module lines separate.
+            
+            const datasets = modules
+                .filter(mod => chartData[mod.id].attempts.length > 0)
+                .map(mod => {
+                    const modData = chartData[mod.id];
+                    
+                    return {
+                        label: modData.moduleName,
+                        data: modData.attempts.map(a => ({
+                            x: a.date.getTime(), // Use epoch time for X-axis
+                            y: a.score
+                        })),
+                        borderColor: moduleColors[mod.id],
+                        backgroundColor: moduleColors[mod.id] + '40', // Semi-transparent fill
+                        fill: false,
+                        tension: 0.1,
+                        pointRadius: 5,
+                        pointHoverRadius: 8,
+                    };
+                });
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                tooltipFormat: 'MMM D, h:mm a',
+                                displayFormats: {
+                                    day: 'MMM D'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            },
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: {
+                                display: true,
+                                text: 'Score Percentage (%)'
+                            },
+                            grid: {
+                                color: '#f3f4f6'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                boxWidth: 12,
+                                padding: 15,
+                                usePointStyle: true,
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: function(tooltipItems) {
+                                    return new Date(tooltipItems[0].parsed.x).toLocaleString();
+                                },
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += context.parsed.y + '%';
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        async function finishQuiz() {
+            const mod = getModuleDetails(state.currentModuleId);
+            const totalQuestions = mod.quiz.length;
+            const passingScore = Math.ceil(totalQuestions * 0.7); // 70% passing score
+            const passed = state.score >= passingScore;
+            
+            const attemptRecord = {
+                moduleId: mod.id,
+                score: state.score,
+                total: totalQuestions,
+                passed: passed,
+                timestamp: new Date(),
+            };
+
+            // Save attempt to Firestore
+            if (db && userId && userId !== 'unauthenticated' && userId !== 'readonly') {
+                try {
+                    // Use addDoc which automatically creates a new document ID
+                    const docRef = await addDoc(collection(db, ATTEMPTS_COLLECTION_PATH(userId)), attemptRecord);
+                    console.log("Attempt successfully saved with ID:", docRef.id);
+                } catch (error) {
+                    console.error("Error saving attempt to Firestore:", error);
+                }
+            } else {
+                console.warn("Attempt not saved: Running in unauthenticated or read-only mode.");
+                // Manually update local history for immediate display if not saving
+                attemptsHistory.unshift(attemptRecord);
+            }
+
+            // Display results
+            appContainer.innerHTML = `
+                <div class="max-w-lg mx-auto fade-in h-full flex flex-col justify-center items-center text-center p-6">
+                    <div class="w-24 h-24 ${passed ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'} rounded-full flex items-center justify-center mb-6 shadow-sm">
+                        ${passed 
+                            ? `<svg class="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`
+                            : `<svg class="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>`
+                        }
+                    </div>
+                    <h2 class="text-3xl font-bold text-slate-900 mb-2">${passed ? 'Quiz Passed!' : 'Try Again'}</h2>
+                    <p class="text-gray-600 mb-8 text-lg">You scored <span class="font-bold text-slate-900">${state.score}/${totalQuestions}</span> (${Math.round(state.score/totalQuestions*100)}%). ${passed ? 'Excellent work mastering this domain.' : `Review the material (70% required to pass).`}</p>
+                    
+                    <div class="w-full space-y-3">
+                        <button onclick="renderHome()" class="w-full bg-slate-900 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-slate-800 transition-transform active:scale-95">
+                            Back to Dashboard
+                        </button>
+                        <button onclick="renderPerformance()" class="w-full bg-yellow-400 text-slate-900 font-bold py-4 rounded-xl hover:bg-yellow-300 transition-colors">
+                            View Performance History
+                        </button>
+                    </div>
+                </div>
+            `;
+            updateTotalProgress();
+        }
+
+        // --- Initialize Chart.js Date Adapter ---
+        // This is necessary for Chart.js to handle timestamps on the X-axis
+        // Using the Day.js adapter (must be included before chart initialization)
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-dayjs-4.3.0/dist/chartjs-adapter-dayjs.min.js';
+        document.head.appendChild(script);
+
+        // --- Initialize ---
+        if (isAuthReady) {
+            renderHome();
+        }
+    </script>
+</body>
+</html>
